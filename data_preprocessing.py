@@ -84,12 +84,13 @@ def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
     HR_DIR = "/kaggle/input/high-res-and-low-res-mri/Refined-MRI-dataset/High-Res"
     LR_DIR = "/kaggle/input/high-res-and-low-res-mri/Refined-MRI-dataset/Low-Res"
 
-    hr_nii_files = glob.glob(os.path.join(HR_DIR, "**/*.nii"), recursive=True)
+    hr_nii_files = glob.glob(os.path.join(HR_DIR, '**', '*.nii'), recursive=True)
     lr_nii_files = []
     matched_hr_nii_files = []
     for hr_path in hr_nii_files:
         filename = os.path.basename(hr_path)
-        lr_path = os.path.join(LR_DIR, filename)
+        lr_filename = 'lowres_' + filename
+        lr_path = os.path.join(LR_DIR, lr_filename)
         if os.path.exists(lr_path):
             matched_hr_nii_files.append(hr_path)
             lr_nii_files.append(lr_path)
