@@ -4,7 +4,7 @@ import SimpleITK as sitk
 import tensorflow as tf
 import tensorflow_addons as tfa
 from numpy.random import randint
-
+import os
 
 PATCH_SIZE           = 40
 GAUSSIAN_NOISE       = 0.25
@@ -12,6 +12,7 @@ SCALING_FACTOR       = 2
 interpolation_method = 'bicubic'
 BOUNDARY_VOXELS_1    = 50
 BOUNDARY_VOXELS_2    = BOUNDARY_VOXELS_1-PATCH_SIZE
+
 
 @tf.function
 def NormalizeImage(image):
@@ -79,20 +80,38 @@ def extract_patch(lr_image, hr_image):
 
 def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
 
-    nii_files = glob.glob("data/**/*.nii", recursive=True)
-    nii_files = np.array(nii_files)
+    # Directories containing High Resolution (HR) and Low Resolution (LR) MRI volumes
+    HR_DIR = "/kaggle/input/high-res-and-low-res-mri/Refined-MRI-dataset/High-Res"
+    LR_DIR = "/kaggle/input/high-res-and-low-res-mri/Refined-MRI-dataset/Low-Res"
+
+    hr_nii_files = glob.glob(os.path.join(HR_DIR, "**/*.nii"), recursive=True)
+    lr_nii_files = []
+    matched_hr_nii_files = []
+    for hr_path in hr_nii_files:
+        filename = os.path.basename(hr_path)
+        lr_path = os.path.join(LR_DIR, filename)
+        if os.path.exists(lr_path):
+            matched_hr_nii_files.append(hr_path)
+            lr_nii_files.append(lr_path)
+
+    hr_nii_files = np.array(matched_hr_nii_files)
+    lr_nii_files = np.array(lr_nii_files)
 
     AUTOTUNE = tf.data.AUTOTUNE
 
-    # Data Pipeline
-    file_names        = tf.data.Dataset.from_tensor_slices(nii_files)
-    images            = file_names.map( lambda x: tf.numpy_function(func=get_nii_file, inp=[x],
-     Tout=tf.int32), num_parallel_calls=AUTOTUNE, deterministic=False)
-    images_w_noise    = images.map(add_noise, num_parallel_calls=AUTOTUNE, deterministic=False)
-    image_pairs       = images_w_noise.map( lambda x,y: tf.numpy_function(func=get_low_res, inp=[x,y],
-         Tout=(tf.int32, tf.int32)), num_parallel_calls=AUTOTUNE, deterministic=False)
-    norm_image_pairs  = image_pairs.map(normalize, num_parallel_calls=AUTOTUNE,
-     deterministic=False)
+    # Create paired Dataset of (lr_path, hr_path)
+    file_names_lr = tf.data.Dataset.from_tensor_slices(lr_nii_files)
+    file_names_hr = tf.data.Dataset.from_tensor_slices(hr_nii_files)
+    file_pairs    = tf.data.Dataset.zip((file_names_lr, file_names_hr))
+
+    # Load LR and HR volumes
+    image_pairs = file_pairs.map(lambda lr_p, hr_p: (
+                                    tf.numpy_function(func=get_nii_file, inp=[lr_p], Tout=tf.int32),
+                                    tf.numpy_function(func=get_nii_file, inp=[hr_p], Tout=tf.int32)),
+                                 num_parallel_calls=AUTOTUNE, deterministic=False)
+
+    # Normalization & Patch Extraction
+    norm_image_pairs  = image_pairs.map(normalize, num_parallel_calls=AUTOTUNE, deterministic=False)
     norm_image_pairs  = norm_image_pairs.map(extract_patch, num_parallel_calls=AUTOTUNE, deterministic=False)
 
     dataset_size          = norm_image_pairs.cardinality().numpy()
