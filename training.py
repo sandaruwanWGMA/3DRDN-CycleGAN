@@ -29,7 +29,10 @@ def evaluation_loop(dataset, PATCH_SIZE):
     for lr_image, hr_image in dataset:
         output = m.generator_g(lr_image, training=False).numpy()
         output_list.append(output)
-        hr_list.append(hr_image.numpy())
+        if isinstance(hr_image, np.ndarray):
+            hr_list.append(hr_image)
+        else:
+            hr_list.append(hr_image.numpy())
     output_data = np.concatenate(output_list, axis=0)
     hr_data = np.concatenate(hr_list, axis=0)
     output_data = tf.squeeze(output_data).numpy()
