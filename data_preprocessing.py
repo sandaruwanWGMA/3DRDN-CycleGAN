@@ -82,8 +82,23 @@ def non_overlapping_patch_generator(subjects):
 
     return generator
 
+def calculate_total_patches(subjects, patch_size):
+    total_patches = 0
+    for subject in subjects:
+        spatial_dims = subject.lr_image.shape[1:]
+
+        patches_d = np.ceil(spatial_dims[0] / patch_size)
+        patches_h = np.ceil(spatial_dims[1] / patch_size)
+        patches_w = np.ceil(spatial_dims[2] / patch_size)
+
+        num_patches_for_subject = patches_d * patches_h * patches_w
+        total_patches += num_patches_for_subject
+
+    return int(total_patches)
+
 
 def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
+
     HR_DIR = "/kaggle/input/high-res-and-low-res-mri/Refined-MRI-dataset/High-Res"
     LR_DIR = "/kaggle/input/high-res-and-low-res-mri/Refined-MRI-dataset/Low-Res"
 
@@ -100,6 +115,7 @@ def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
             )
             subjects_list.append(subject)
 
+    # This prevents data leakage between sets.
     train_subjects, test_val_subjects = train_test_split(subjects_list, test_size=0.3, random_state=42)
     valid_subjects, test_subjects = train_test_split(test_val_subjects, test_size=0.5, random_state=42)
 
@@ -108,6 +124,14 @@ def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
     print(f"Validation Subjects: {len(valid_subjects)}")
     print(f"Test Subjects: {len(test_subjects)}")
 
+    train_dataset_size = calculate_total_patches(train_subjects, PATCH_SIZE)
+    valid_dataset_size = calculate_total_patches(valid_subjects, PATCH_SIZE)
+    test_dataset_size = calculate_total_patches(test_subjects, PATCH_SIZE)
+
+    print(f"\nTotal Training Patches: {train_dataset_size}")
+    print(f"Total Validation Patches: {valid_dataset_size}")
+    print(f"Total Test Patches: {test_dataset_size}")
+
     AUTOTUNE = tf.data.AUTOTUNE
 
     output_signature = (
@@ -115,14 +139,9 @@ def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
         tf.TensorSpec(shape=(PATCH_SIZE, PATCH_SIZE, PATCH_SIZE, 1), dtype=tf.float32)
     )
 
-    # Count patches before creating datasets
-    N_TRAINING_DATA = count_patches(train_subjects)
-    N_VALIDATION_DATA = count_patches(valid_subjects)
-    N_TESTING_DATA = count_patches(test_subjects)
-
-    # Create datasets as before
+    # Training Data Pipeline
     train_dataset = tf.data.Dataset.from_generator(
-        lambda: non_overlapping_patch_generator(train_subjects),
+        non_overlapping_patch_generator(train_subjects),
         output_signature=output_signature
     )
     train_dataset = train_dataset.shuffle(buffer_size=1000)
@@ -130,18 +149,24 @@ def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
     train_dataset = train_dataset.map(data_augmentation, num_parallel_calls=AUTOTUNE)
     train_dataset = train_dataset.batch(BATCH_SIZE, drop_remainder=True).prefetch(AUTOTUNE)
 
+    # Validation Data Pipeline
     valid_dataset = tf.data.Dataset.from_generator(
-        lambda: non_overlapping_patch_generator(valid_subjects),
+        non_overlapping_patch_generator(valid_subjects),
         output_signature=output_signature
     )
     valid_dataset = valid_dataset.map(normalize_patches, num_parallel_calls=AUTOTUNE)
     valid_dataset = valid_dataset.batch(VALIDATION_BATCH_SIZE, drop_remainder=True).prefetch(AUTOTUNE)
 
+    # Test Data Pipeline
     test_dataset = tf.data.Dataset.from_generator(
-        lambda: non_overlapping_patch_generator(test_subjects),
+        non_overlapping_patch_generator(test_subjects),
         output_signature=output_signature
     )
     test_dataset = test_dataset.map(normalize_patches, num_parallel_calls=AUTOTUNE)
     test_dataset = test_dataset.batch(BATCH_SIZE, drop_remainder=True).prefetch(AUTOTUNE)
 
-    return train_dataset, N_TRAINING_DATA, valid_dataset, N_VALIDATION_DATA, test_dataset, N_TESTING_DATA
+    print("Train dataset shape: ", train_dataset.element_spec)
+    print("Valid dataset shape: ", valid_dataset.element_spec)
+    print("Test dataset shape: ", test_dataset.element_spec)
+
+    return train_dataset, train_dataset_size, valid_dataset, valid_dataset_size, test_dataset, test_dataset_size
