@@ -30,7 +30,11 @@ def evaluation_loop(dataset, dataset_size, batch_size):
     for i, (lr_batch, hr_batch) in enumerate(dataset):
         if (i + 1) % 100 == 0:
             log(f"  > Evaluating batch {i + 1} / {num_batches}")
+
         pred_batch = m.generator_g(lr_batch, training=False)
+        pred_batch = tf.cast(pred_batch, tf.float32)
+        hr_batch = tf.cast(hr_batch, tf.float32)
+
         all_psnrs.append(tf.image.psnr(pred_batch, hr_batch, max_val=1.0))
         all_ssims.append(tf.image.ssim(pred_batch, hr_batch, max_val=1.0))
         all_abs_errors.append(tf.math.abs(hr_batch - pred_batch))
