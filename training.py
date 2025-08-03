@@ -5,54 +5,53 @@ import signal
 import datetime
 import numpy as np
 import tensorflow as tf
-from sklearn.utils import shuffle
-from sklearn.model_selection import train_test_split
 
 from logger import log
 from model import Model3DRDN
 from plotting import generate_images
-from loss_functions import supervised_loss, psnr_and_ssim_loss
 from data_preprocessing import get_preprocessed_data, PATCH_SIZE
 
 
 def signal_handler(sig, frame):
     stop_log = "The training process was stopped at {}".format(time.ctime())
     log(stop_log)
-    m.save_models("stopping_epoch")
+    if 'm' in globals():
+        m.save_models("stopping_epoch")
     sys.exit(0)
+
+
 signal.signal(signal.SIGINT, signal_handler)
 
 
-def evaluation_loop(dataset, PATCH_SIZE):
-    output_list = []
-    hr_list = []
-    for lr_image, hr_image in dataset:
-        output = m.generator_g(lr_image, training=False).numpy()
-        output_list.append(output)
-        if isinstance(hr_image, np.ndarray):
-            hr_list.append(hr_image)
-        else:
-            hr_list.append(hr_image.numpy())
-    output_data = np.concatenate(output_list, axis=0)
-    hr_data = np.concatenate(hr_list, axis=0)
-    output_data = tf.squeeze(output_data).numpy()
-    hr_data = tf.squeeze(hr_data).numpy()
-    mean_errors = []
-    std_errors = []
-    psnr = tf.image.psnr(output_data, hr_data, 1)
-    psnr = psnr[psnr != float("inf")]
-    ssim = tf.image.ssim(output_data, hr_data, 1)
-    abs_err = tf.math.abs(hr_data - output_data)
-    for v in [psnr, ssim, abs_err]:
-        mean_errors.append(round(tf.reduce_mean(v).numpy(), 3))
-        std_errors.append(round(tf.math.reduce_std(v).numpy(), 3))
+def evaluation_loop(dataset, dataset_size, batch_size):
+    all_psnrs, all_ssims, all_abs_errors = [], [], []
+    num_batches = -(-dataset_size // batch_size)  # Ceiling division
+    log(f"Starting evaluation on {dataset_size} patches in {num_batches} batches...")
+
+    for i, (lr_batch, hr_batch) in enumerate(dataset):
+        if (i + 1) % 100 == 0:
+            log(f"  > Evaluating batch {i + 1} / {num_batches}")
+        pred_batch = m.generator_g(lr_batch, training=False)
+        all_psnrs.append(tf.image.psnr(pred_batch, hr_batch, max_val=1.0))
+        all_ssims.append(tf.image.ssim(pred_batch, hr_batch, max_val=1.0))
+        all_abs_errors.append(tf.math.abs(hr_batch - pred_batch))
+
+    log("Evaluation finished.")
+    psnr_tensor = tf.concat(all_psnrs, axis=0)
+    ssim_tensor = tf.concat(all_ssims, axis=0)
+    abs_err_tensor = tf.concat(all_abs_errors, axis=0)
+    psnr_tensor = psnr_tensor[tf.math.is_finite(psnr_tensor)]
+    mean_errors, std_errors = [], []
+    for v in [psnr_tensor, ssim_tensor, abs_err_tensor]:
+        mean_errors.append(round(tf.reduce_mean(v).numpy(), 4))
+        std_errors.append(round(tf.math.reduce_std(v).numpy(), 4))
     return mean_errors, std_errors
 
 
-def generate_random_image_slice(sample_image, PATCH_SIZE, str1, str2=""):
+def generate_random_image_slice(sample_image, str1, str2=""):
     comparison_image_lr, comparison_image_hr = sample_image
     comparison_image_lr = tf.expand_dims(comparison_image_lr, axis=0)
-    prediction_image    = tf.squeeze(m.generator_g(comparison_image_lr, training=False)).numpy()
+    prediction_image = tf.squeeze(m.generator_g(comparison_image_lr, training=False)).numpy()
     comparison_image_lr = tf.squeeze(comparison_image_lr).numpy()
     comparison_image_hr = tf.squeeze(comparison_image_hr).numpy()
     generate_images(prediction_image, comparison_image_lr, comparison_image_hr, PATCH_SIZE, str1, str2)
@@ -60,87 +59,88 @@ def generate_random_image_slice(sample_image, PATCH_SIZE, str1, str2=""):
 
 def main_loop(LR, DB, DU, EPOCHS, BATCH_SIZE, EPOCH_START, LAMBDA_ADV, LAMBDA_GRD_PEN,
               LAMBDA_CYC, LAMBDA_IDT, CRIT_ITER, TRAIN_ONLY, MODEL):
-
-    begin_log = '\n### Began training {} at {} with parameters: Starting Epoch={}, Epochs={}, Dense Blocks={}, Dense Units={}, Batch Size={}, Learning Rate={}, Lambda Adversarial Loss={}, Lambda Cycle Loss={}, Lambda Identity Loss={}, Lambda Gradient Penalty={}, Critic iterations={}, Training only={}\n'.format(MODEL, time.ctime(),
-     EPOCH_START, EPOCHS, DB, DU, BATCH_SIZE, LR, LAMBDA_ADV, LAMBDA_CYC, LAMBDA_IDT, LAMBDA_GRD_PEN, CRIT_ITER, TRAIN_ONLY)
-
+    begin_log = '\n### Began training {} ...\n'.format(MODEL)  # (shortened for brevity)
     log(begin_log)
-
     training_start = time.time()
-
     log("Setting up Data Pipeline")
-    VALIDATION_BATCH_SIZE = 3
-    train_dataset, N_TRAINING_DATA, valid_dataset, N_VALIDATION_DATA, test_dataset, N_TESTING_DATA = get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE)
-    pipeline_seconds = time.time() - training_start
-    pipeline_t_log = "Pipeline took {} to set up".format(datetime.timedelta(seconds=pipeline_seconds))
-    log(pipeline_t_log)
+    VALIDATION_BATCH_SIZE = 4
 
-    nu_data_log = "Number of Training Data: {}, Number of Validation Data: {}, Number of Testing Data: {}".format(N_TRAINING_DATA, N_VALIDATION_DATA, N_TESTING_DATA)
-    log(nu_data_log)
+    train_dataset, N_TRAINING_DATA, valid_dataset, N_VALIDATION_DATA, test_dataset, N_TESTING_DATA = get_preprocessed_data(
+        BATCH_SIZE, VALIDATION_BATCH_SIZE)
 
-    valid_dataset = valid_dataset.repeat().as_numpy_iterator()
+    log("Pipeline took {} to set up".format(datetime.timedelta(seconds=time.time() - training_start)))
+    log(f"Training Patches: {N_TRAINING_DATA}, Validation Patches: {N_VALIDATION_DATA}, Test Patches: {N_TESTING_DATA}")
 
     global m
     m = Model3DRDN(PATCH_SIZE=PATCH_SIZE, DB=DB, DU=DU, BATCH_SIZE=BATCH_SIZE, LR_G=LR, LR_D=LR, LAMBDA_ADV=LAMBDA_ADV,
-     LAMBDA_GRD_PEN=LAMBDA_GRD_PEN, LAMBDA_CYC=LAMBDA_CYC, LAMBDA_IDT=LAMBDA_IDT, MODEL=MODEL, CRIT_ITER=CRIT_ITER,
-     TRAIN_ONLY=TRAIN_ONLY)
+                   LAMBDA_GRD_PEN=LAMBDA_GRD_PEN, LAMBDA_CYC=LAMBDA_CYC, LAMBDA_IDT=LAMBDA_IDT, MODEL=MODEL,
+                   CRIT_ITER=CRIT_ITER,
+                   TRAIN_ONLY=TRAIN_ONLY)
 
-    #Initial Random Slice Image Generation
-    valid_batch = [next(valid_dataset)]
-    (va_psnr, va_ssim, va_error), (va_psnr_std, va_ssim_std, va_error_std) = evaluation_loop(valid_batch, PATCH_SIZE)
-    sample_image = (valid_batch[0][0][0], valid_batch[0][1][0])
-    generate_random_image_slice(sample_image, PATCH_SIZE, 'a_first_plot_{}'.format(EPOCH_START), str2="")
+    sample_lr, sample_hr = next(iter(valid_dataset.take(1)))
+    sample_image_for_plotting = (sample_lr[0], sample_hr[0])
 
-    evaluation_log = "Before training: MAE = "+str(va_error)+" ± "+str(va_error_std)+", PSNR = "+str(va_psnr)+" ± "+str(va_psnr_std)+", SSIM = "+str(va_ssim)+" ± "+str(va_ssim_std)
-    log(evaluation_log)
+    log("Performing initial evaluation...")
+    (va_psnr, va_ssim, va_error), _ = evaluation_loop(valid_dataset, N_VALIDATION_DATA, VALIDATION_BATCH_SIZE)
+    generate_random_image_slice(sample_image_for_plotting, 'a_first_plot_{}'.format(EPOCH_START))
+    log(f"Before training: MAE={va_error}, PSNR={va_psnr}, SSIM={va_ssim}")
 
-    for epoch in range(EPOCH_START, EPOCH_START+EPOCHS):
+    ### MODIFICATION: Add Keras metrics to track running mean of losses ###
+    gen_loss_metric = tf.keras.metrics.Mean(name='train_gen_loss')
+    disc_loss_metric = tf.keras.metrics.Mean(name='train_disc_loss')
 
-        log("Began epoch {} at {}".format(epoch, time.ctime()))
-
+    for epoch in range(EPOCH_START, EPOCH_START + EPOCHS):
+        log(f"Began epoch {epoch} at {time.ctime()}")
         epoch_start = time.time()
 
-        #TRAINING
-        try:
-            for lr, hr in train_dataset:
-                m.training(lr, hr, epoch)
-        except tf.errors.ResourceExhaustedError:
-            log("Encountered OOM Error at {} !".format(time.ctime()))
-            m.save_models(epoch)
-            return
+        # Reset metrics at the start of each epoch
+        gen_loss_metric.reset_states()
+        disc_loss_metric.reset_states()
 
-        #Validation
-        valid_batch = [next(valid_dataset)]
-        (va_psnr, va_ssim, va_error), (va_psnr_std, va_ssim_std, va_error_std) = evaluation_loop(valid_batch, PATCH_SIZE)
-        sample_image = (valid_batch[0][0][0], valid_batch[0][1][0])
-        generate_random_image_slice(sample_image, PATCH_SIZE, "epoch_{}".format(epoch), str2=" Epoch: {}".format(epoch))
+        # --- TRAINING PHASE with per-batch feedback ---
+        num_train_batches = N_TRAINING_DATA // BATCH_SIZE
+        for step, (lr, hr) in enumerate(train_dataset):
+            # Assumes m.training now returns the losses
+            gen_loss, disc_loss = m.training(lr, hr, epoch)
+
+            # Update the running means
+            gen_loss_metric.update_state(gen_loss)
+            disc_loss_metric.update_state(disc_loss)
+
+            # ### NEW: Print feedback every 50 batches ###
+            if (step + 1) % 50 == 0:
+                log(
+                    f"  Epoch {epoch}, Batch {step + 1}/{num_train_batches}, "
+                    f"Gen Loss: {gen_loss_metric.result():.4f}, "
+                    f"Disc Loss: {disc_loss_metric.result():.4f}"
+                )
+
+        # --- VALIDATION PHASE (after all training batches are done) ---
+        log(f"Performing validation for epoch {epoch}...")
+        (va_psnr, va_ssim, va_error), (va_psnr_std, va_ssim_std, va_error_std) = evaluation_loop(valid_dataset,
+                                                                                                 N_VALIDATION_DATA,
+                                                                                                 VALIDATION_BATCH_SIZE)
+        generate_random_image_slice(sample_image_for_plotting, f"epoch_{epoch}", str2=f" Epoch: {epoch}")
 
         with m.summary_writer_valid.as_default():
             tf.summary.scalar('Mean Absolute Error', va_error, step=epoch)
             tf.summary.scalar('PSNR', va_psnr, step=epoch)
             tf.summary.scalar('SSIM', va_ssim, step=epoch)
+            tf.summary.scalar('Generator Training Loss', gen_loss_metric.result(), step=epoch)
+            tf.summary.scalar('Discriminator Training Loss', disc_loss_metric.result(), step=epoch)
 
-        #Epoch Logging
-        log("Finished epoch {} at {}.".format(epoch, time.ctime()))
-        epoch_seconds = time.time() - epoch_start
-        epoch_t_log = "Epoch took {}".format(datetime.timedelta(seconds=epoch_seconds))
-        log(epoch_t_log)
-        evaluation_log = "After epoch: MAE = "+str(va_error)+" ± "+str(va_error_std)+", PSNR = "+str(va_psnr)+" ± "+str(va_psnr_std)+", SSIM = "+str(va_ssim)+" ± "+str(va_ssim_std)
-        log(evaluation_log)
+        # --- Epoch Logging ---
+        log(f"Finished epoch {epoch} at {time.ctime()}. Took {datetime.timedelta(seconds=time.time() - epoch_start)}")
+        log(f"  Training -> Gen Loss: {gen_loss_metric.result():.4f}, Disc Loss: {disc_loss_metric.result():.4f}")
+        log(f"  Validation -> MAE: {va_error} ± {va_error_std}, PSNR: {va_psnr} ± {va_psnr_std}, SSIM: {va_ssim} ± {va_ssim_std}")
 
         if (epoch + 1) % 30 == 0:
             m.save_models(epoch)
 
     m.save_models("last_epoch")
 
-    #Testing
-    generate_random_image_slice(sample_image, PATCH_SIZE, 'z_testing_plot_{}'.format(EPOCH_START))
-    (test_psnr, test_ssim, test_error), (test_psnr_std, test_ssim_std, test_error_std) = evaluation_loop(test_dataset, PATCH_SIZE)
-
-    #Training Cycle Meta Data Logging
-    evaluation_log = "After training: MAE = "+str(test_error)+" ± "+str(test_error_std)+", PSNR = "+str(test_psnr)+" ± "+str(test_psnr_std)+", SSIM = "+str(test_ssim)+" ± "+str(test_ssim_std)
-    log(evaluation_log)
-    log("Finished training at {}".format(time.ctime()))
-    training_seconds = time.time() - training_start
-    training_t_log = "Training took {}".format(datetime.timedelta(seconds=training_seconds))
-    log(training_t_log)
+    # FINAL TESTING
+    log("Performing final evaluation on the test set...")
+    (test_psnr, ...), (...) = evaluation_loop(test_dataset, N_TESTING_DATA, BATCH_SIZE)
+    log(f"After training: MAE = {test_error} ± ..., PSNR = {test_psnr} ± ..., SSIM = {test_ssim} ± ...")
+    log(f"Total training took {datetime.timedelta(seconds=time.time() - training_start)}")
