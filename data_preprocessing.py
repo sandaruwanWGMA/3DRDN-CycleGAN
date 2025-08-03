@@ -100,7 +100,6 @@ def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
             )
             subjects_list.append(subject)
 
-    # This prevents data leakage between sets.
     train_subjects, test_val_subjects = train_test_split(subjects_list, test_size=0.3, random_state=42)
     valid_subjects, test_subjects = train_test_split(test_val_subjects, test_size=0.5, random_state=42)
 
@@ -116,30 +115,33 @@ def get_preprocessed_data(BATCH_SIZE, VALIDATION_BATCH_SIZE):
         tf.TensorSpec(shape=(PATCH_SIZE, PATCH_SIZE, PATCH_SIZE, 1), dtype=tf.float32)
     )
 
-    # Training Data Pipeline
+    # Count patches before creating datasets
+    N_TRAINING_DATA = count_patches(train_subjects)
+    N_VALIDATION_DATA = count_patches(valid_subjects)
+    N_TESTING_DATA = count_patches(test_subjects)
+
+    # Create datasets as before
     train_dataset = tf.data.Dataset.from_generator(
-        non_overlapping_patch_generator(train_subjects),
+        lambda: non_overlapping_patch_generator(train_subjects),
         output_signature=output_signature
     )
-    train_dataset = train_dataset.shuffle(buffer_size=1000)  # Shuffle the patches
+    train_dataset = train_dataset.shuffle(buffer_size=1000)
     train_dataset = train_dataset.map(normalize_patches, num_parallel_calls=AUTOTUNE)
     train_dataset = train_dataset.map(data_augmentation, num_parallel_calls=AUTOTUNE)
     train_dataset = train_dataset.batch(BATCH_SIZE, drop_remainder=True).prefetch(AUTOTUNE)
 
-    # Validation Data Pipeline
     valid_dataset = tf.data.Dataset.from_generator(
-        non_overlapping_patch_generator(valid_subjects),
+        lambda: non_overlapping_patch_generator(valid_subjects),
         output_signature=output_signature
     )
     valid_dataset = valid_dataset.map(normalize_patches, num_parallel_calls=AUTOTUNE)
     valid_dataset = valid_dataset.batch(VALIDATION_BATCH_SIZE, drop_remainder=True).prefetch(AUTOTUNE)
 
-    # Test Data Pipeline
     test_dataset = tf.data.Dataset.from_generator(
-        non_overlapping_patch_generator(test_subjects),
+        lambda: non_overlapping_patch_generator(test_subjects),
         output_signature=output_signature
     )
     test_dataset = test_dataset.map(normalize_patches, num_parallel_calls=AUTOTUNE)
     test_dataset = test_dataset.batch(BATCH_SIZE, drop_remainder=True).prefetch(AUTOTUNE)
 
-    return train_dataset, valid_dataset, test_dataset
+    return train_dataset, N_TRAINING_DATA, valid_dataset, N_VALIDATION_DATA, test_dataset, N_TESTING_DATA
