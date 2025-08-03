@@ -3,7 +3,6 @@ import sys
 import time
 import signal
 import datetime
-import numpy as np
 import tensorflow as tf
 
 from logger import log
@@ -59,7 +58,7 @@ def generate_random_image_slice(sample_image, str1, str2=""):
 
 def main_loop(LR, DB, DU, EPOCHS, BATCH_SIZE, EPOCH_START, LAMBDA_ADV, LAMBDA_GRD_PEN,
               LAMBDA_CYC, LAMBDA_IDT, CRIT_ITER, TRAIN_ONLY, MODEL):
-    begin_log = '\n### Began training {} ...\n'.format(MODEL)  # (shortened for brevity)
+    begin_log = '\n### Began training {} ...\n'.format(MODEL)
     log(begin_log)
     training_start = time.time()
     log("Setting up Data Pipeline")
@@ -85,7 +84,6 @@ def main_loop(LR, DB, DU, EPOCHS, BATCH_SIZE, EPOCH_START, LAMBDA_ADV, LAMBDA_GR
     generate_random_image_slice(sample_image_for_plotting, 'a_first_plot_{}'.format(EPOCH_START))
     log(f"Before training: MAE={va_error}, PSNR={va_psnr}, SSIM={va_ssim}")
 
-    ### MODIFICATION: Add Keras metrics to track running mean of losses ###
     gen_loss_metric = tf.keras.metrics.Mean(name='train_gen_loss')
     disc_loss_metric = tf.keras.metrics.Mean(name='train_disc_loss')
 
@@ -93,21 +91,15 @@ def main_loop(LR, DB, DU, EPOCHS, BATCH_SIZE, EPOCH_START, LAMBDA_ADV, LAMBDA_GR
         log(f"Began epoch {epoch} at {time.ctime()}")
         epoch_start = time.time()
 
-        # Reset metrics at the start of each epoch
         gen_loss_metric.reset_states()
         disc_loss_metric.reset_states()
 
-        # --- TRAINING PHASE with per-batch feedback ---
         num_train_batches = N_TRAINING_DATA // BATCH_SIZE
         for step, (lr, hr) in enumerate(train_dataset):
-            # Assumes m.training now returns the losses
             gen_loss, disc_loss = m.training(lr, hr, epoch)
-
-            # Update the running means
             gen_loss_metric.update_state(gen_loss)
             disc_loss_metric.update_state(disc_loss)
 
-            # ### NEW: Print feedback every 50 batches ###
             if (step + 1) % 50 == 0:
                 log(
                     f"  Epoch {epoch}, Batch {step + 1}/{num_train_batches}, "
@@ -115,7 +107,6 @@ def main_loop(LR, DB, DU, EPOCHS, BATCH_SIZE, EPOCH_START, LAMBDA_ADV, LAMBDA_GR
                     f"Disc Loss: {disc_loss_metric.result():.4f}"
                 )
 
-        # --- VALIDATION PHASE (after all training batches are done) ---
         log(f"Performing validation for epoch {epoch}...")
         (va_psnr, va_ssim, va_error), (va_psnr_std, va_ssim_std, va_error_std) = evaluation_loop(valid_dataset,
                                                                                                  N_VALIDATION_DATA,
@@ -129,7 +120,6 @@ def main_loop(LR, DB, DU, EPOCHS, BATCH_SIZE, EPOCH_START, LAMBDA_ADV, LAMBDA_GR
             tf.summary.scalar('Generator Training Loss', gen_loss_metric.result(), step=epoch)
             tf.summary.scalar('Discriminator Training Loss', disc_loss_metric.result(), step=epoch)
 
-        # --- Epoch Logging ---
         log(f"Finished epoch {epoch} at {time.ctime()}. Took {datetime.timedelta(seconds=time.time() - epoch_start)}")
         log(f"  Training -> Gen Loss: {gen_loss_metric.result():.4f}, Disc Loss: {disc_loss_metric.result():.4f}")
         log(f"  Validation -> MAE: {va_error} ± {va_error_std}, PSNR: {va_psnr} ± {va_psnr_std}, SSIM: {va_ssim} ± {va_ssim_std}")
@@ -141,6 +131,9 @@ def main_loop(LR, DB, DU, EPOCHS, BATCH_SIZE, EPOCH_START, LAMBDA_ADV, LAMBDA_GR
 
     # FINAL TESTING
     log("Performing final evaluation on the test set...")
-    (test_psnr, ...), (...) = evaluation_loop(test_dataset, N_TESTING_DATA, BATCH_SIZE)
-    log(f"After training: MAE = {test_error} ± ..., PSNR = {test_psnr} ± ..., SSIM = {test_ssim} ± ...")
+    (test_psnr, test_ssim, test_error), (test_psnr_std, test_ssim_std, test_error_std) = evaluation_loop(test_dataset,
+                                                                                                         N_TESTING_DATA,
+                                                                                                         BATCH_SIZE)
+    log(f"After training: MAE = {test_error} ± {test_error_std}, PSNR = {test_psnr} ± {test_psnr_std}, SSIM = {test_ssim} ± {test_ssim_std}")
+
     log(f"Total training took {datetime.timedelta(seconds=time.time() - training_start)}")
