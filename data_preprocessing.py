@@ -60,11 +60,17 @@ def normalize_patches(lr_patch, hr_patch):
 def non_overlapping_patch_generator(subjects):
     patch_size = (PATCH_SIZE, PATCH_SIZE, PATCH_SIZE)
 
-    sampler = tio.GridSampler(patch_size=patch_size, patch_overlap=(0, 0, 0))
-
     def generator():
+        # Iterate over each full MRI scan (subject)
         for subject in subjects:
-            for patch in sampler(subject):
+            sampler = tio.GridSampler(
+                subject=subject,
+                patch_size=patch_size,
+                patch_overlap=(0, 0, 0)
+            )
+
+            # Iterate directly over the sampler.
+            for patch in sampler:
                 lr_patch_tensor = patch['lr_image'][tio.DATA]
                 hr_patch_tensor = patch['hr_image'][tio.DATA]
 
